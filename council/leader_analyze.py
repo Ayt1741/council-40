@@ -21,6 +21,52 @@ def загрузить(папка, шаблон):
     return рез
 
 
+
+def _первый(д, *ключи):
+    for к in ключи:
+        if isinstance(д, dict) and д.get(к) not in (None, "", [], {}):
+            return д[к]
+    return None
+
+
+def нормализовать_разбор(д):
+    """Модели иногда называют ключи по-своему (status вместо verdict, evidence_confirmed вместо confirmed). Приводим к одной схеме, ничего не придумывая."""
+    if not isinstance(д, dict):
+        return {}
+    for обёртка in ("analysis", "result", "response", "output", "answer"):
+        if isinstance(д.get(обёртка), dict) and len(д) <= 3:
+            д = д[обёртка]
+    сырой = str(_первый(д, "verdict", "status", "conclusion", "hypothesis_status", "result") or "").lower()
+    if any(x in сырой for x in ("refut", "reject", "опровер", "не подтвер", "false")):
+        вердикт = "refuted"
+    elif any(x in сырой for x in ("confirm", "support", "подтвер", "true")):
+        вердикт = "confirmed"
+    elif сырой:
+        вердикт = "unclear"
+    else:
+        вердикт = ""
+    вес = _первый(д, "weight", "confidence", "score")
+    try:
+        вес = max(0.0, min(1.0, float(str(вес).replace(",", ".")))) if вес is not None else None
+    except ValueError:
+        вес = None
+
+    def список(*ключи):
+        рез = []
+        for o in (_первый(д, *ключи) or []):
+            if not isinstance(o, dict):
+                continue
+            рез.append({**o, "claim": str(_первый(o, "claim", "statement", "finding", "what", "summary", "text") or "")[:300],
+                        "e": str(_первый(o, "e", "evidence", "evidence_id", "id", "source") or ""),
+                        "quote": str(_первый(o, "quote", "citation", "evidence_quote", "excerpt") or "")})
+        return рез
+    return {"verdict": вердикт, "weight": вес, "reason": str(_первый(д, "reason", "summary", "rationale", "explanation") or ""),
+            "confirmed": список("confirmed", "evidence_confirmed", "confirmed_claims", "supporting", "supported", "confirmations"),
+            "refuted": список("refuted", "evidence_refuted", "refuted_claims", "contradicting", "contradicted"),
+            "ready_solutions": список("ready_solutions", "solutions", "ready_made_solutions", "ready"),
+            "gaps": str(_первый(д, "gaps", "unclear", "open_questions") or "")}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--id", required=True)
@@ -70,6 +116,7 @@ def main():
                     ' "gaps": "что осталось неясным, до 30 слов"}\n'
                     "ТРЕБОВАНИЯ: ready_solutions — только если есть рабочий код/приём, официальное подтверждение или ≥2 независимых источника; КАЖДЫЙ элемент обязан содержать e и дословную quote "
                     "(пример: {\"name\": \"PreCompact hook\", \"e\": \"E3\", \"what\": \"сохраняет правила перед сжатием\", \"quote\": \"фрагмент из text E3\", \"stop_condition\": \"code\"}); не выдумывай."
+                    "\nИТОГ: верни один JSON-объект и ТОЛЬКО с ключами verdict, weight, reason, confirmed, refuted, ready_solutions, gaps (названия ключей не менять)."
                     % (задача, a.id, полоса["title"], len(доказательства), json.dumps(доказательства, ensure_ascii=False)))
     time.sleep(int(os.environ.get("CR_STAGGER", "0")) * (int(a.id[1:]) - 1))
 
@@ -80,7 +127,7 @@ def main():
                 continue
             ev = индекс.get(str(o.get("e", "")))
             if ev and c.цитата_дословна(o.get(ключ_цитаты, ""), ev["text"]):
-                ок.append({**o, "url": ev["url"], "title": ev["title"], "qid": ev["qid"], "verified": True})
+                ок.append({**o, "claim": o.get("claim") or ev["title"], "url": ev["url"], "title": ev["title"], "qid": ev["qid"], "verified": True})
             else:
                 плохо.append({**o, "verified": False})
         return ок, плохо
@@ -90,7 +137,7 @@ def main():
         ответ = c.модель(система, пользователь, макс=2200, темп=0.2 + 0.15 * попытка, смещение=int(a.id[1:]) + попытка, сильные=True)
         if os.environ.get("CR_DEBUG"):
             open(a.out + ".raw%d.txt" % попытка, "w", encoding="utf-8").write(ответ or "")
-        кандидат = c.разобрать_json(ответ) or {}
+        кандидат = нормализовать_разбор(c.разобрать_json(ответ) or {})
         качество = (len(проверить(кандидат.get("confirmed"))[0]) + len(проверить(кандидат.get("refuted"))[0]) + len(проверить(кандидат.get("ready_solutions"))[0])) if isinstance(кандидат, dict) else 0
         if качество > лучший[1]:
             лучший = (кандидат, качество)
@@ -118,7 +165,14 @@ def main():
         if isinstance(q, dict) and str(q.get("q", "")).strip():
             новые.append({"id": "%s-N%02d" % (a.id, i), "q": str(q["q"]).strip()[:220], "cat": str(q.get("cat", ""))[:12],
                           "lang": str(q.get("lang", "en"))[:2], "want": str(q.get("want", ""))[:160], "hyp": полоса["hyp"]})
-    итог = {"leader": a.id, "lane": полоса, "ok": bool(д), "verdict": д.get("verdict", "unclear"), "weight": д.get("weight"), "reason": str(д.get("reason", ""))[:300],
+    опр_число = len(опровергнуто)
+    вердикт_модели = д.get("verdict") or ""
+    if вердикт_модели:
+        вердикт, источник_вердикта = вердикт_модели, "модель"
+    else:
+        вердикт = "confirmed" if (len(подтверждено) >= 2 and опр_число == 0) else "refuted" if (опр_число >= 2 and not подтверждено) else "unclear"
+        источник_вердикта = "выведен по числу проверенных цитат (модель вердикт не дала)"
+    итог = {"leader": a.id, "lane": полоса, "ok": bool(д), "verdict": вердикт, "verdict_source": источник_вердикта, "weight": д.get("weight"), "reason": str(д.get("reason", ""))[:300],
             "confirmed": подтверждено, "refuted": опровергнуто, "ready_solutions": решения, "unverified_claims": len(не_подтверждено) + len(решения_без),
             "new_queries": новые, "gaps": str(д.get("gaps", ""))[:300], "evidence_count": len(доказательства), "модели": c.СТАТИСТИКА_МОДЕЛЕЙ}
     c.писать_json(a.out, итог)
