@@ -13,6 +13,9 @@ import cr_common as c
 def собрать_запросы(раунд, src):
     qs = []
     if раунд == 1:
+        # ход 60: сначала СВОИ запросы исполнителей (execplan-*.json), затем планы руководителей
+        for п in sorted(glob.glob(os.path.join(src, "execplan-*.json"))):
+            qs += json_запросы(п, "queries")
         for п in sorted(glob.glob(os.path.join(src, "plan-*.json"))):
             qs += json_запросы(п, "queries")
     else:
