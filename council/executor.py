@@ -26,6 +26,8 @@ def собрать_запросы(раунд, src):
 
 def json_запросы(путь, ключ):
     import json
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cr_common as _c
     try:
         d = json.load(open(путь, encoding="utf-8"))
     except Exception:
@@ -33,7 +35,7 @@ def json_запросы(путь, ключ):
     лидер, гип = d.get("leader", "?"), (d.get("lane") or {}).get("hyp", "")
     рез = []
     for i, q in enumerate(d.get(ключ) or [], 1):
-        if isinstance(q, dict) and str(q.get("q", "")).strip():
+        if isinstance(q, dict) and str(q.get("q", "")).strip() and not _c.мусорный_запрос(q.get("q")):
             рез.append({"id": q.get("id") or "%s-N%02d" % (лидер, i), "q": str(q["q"]).strip()[:220], "cat": q.get("cat", ""),
                         "lang": q.get("lang", ""), "want": q.get("want", ""), "hyp": q.get("hyp") or гип, "leader": лидер})
     return рез
