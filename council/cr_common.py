@@ -316,6 +316,44 @@ def писать_json(путь, объект):
         json.dump(объект, f, ensure_ascii=False, indent=1)
 
 
+# ------------------------------------------------------------------ отсев мусорных запросов (ход 60, прогон 4 показал: L9/L10 ушли в «утечку памяти»)
+МУСОР_ОДИНОЧНЫЕ = ("memory leak", "memory leaks", "утечка памяти", "утечки памяти", "утечку памяти",
+                   "out of memory", "oom", "segfault", "segmentation fault", "leak detection",
+                   "утечка памяти", "утечку памяти", "утечки памяти", "утечк памяти")
+МУСОР_ПАРЫ = (("memory", "leak"), ("память", "утечк"), ("утечк", "памят"))
+
+# «утечка памяти javascript» — разные падежи; отдельные окончания
+МУСОР_КОРНИ = ("утечк", "leak")
+
+
+СПАСЕНИЕ = ("compaction", "сжат", "context window", "окно контекста", "промпт", "prompt",
+            "правил", "rules", "instruction", "инструкц", "claude.md", "agents.md", "handbook", "skill")
+
+
+def мусорный_запрос(q):
+    """True, если запрос ушёл в программистскую «утечку памяти», а не в память/правила ИИ-агента.
+    Проверено фикстурой: «Arena Agent Mode memory leak» — мусор (слово agent не спасает),
+    «context compaction loses agent instructions» — годный."""
+    т = str(q or "").lower()
+    if any(м in т for м in МУСОР_ОДИНОЧНЫЕ):
+        if not any(с in т for с in СПАСЕНИЕ):
+            return True
+    return False
+
+
+def отсеять(список):
+    """Возвращает (годные, отсеяно)."""
+    годные, отсеяно = [], 0
+    for q in список:
+        if not isinstance(q, dict):
+            continue
+        if мусорный_запрос(q.get("q")):
+            отсеяно += 1
+            continue
+        годные.append(q)
+    return годные, отсеяно
+
+
 def протокол_и_задача(полный=False):
     """По умолчанию — сжатые тексты (лимит Groq 8000 токенов/мин на модель); полные лежат рядом (protocol.md, task.md)."""
     база = os.path.dirname(os.path.abspath(__file__))
