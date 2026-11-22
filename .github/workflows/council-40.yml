@@ -16,11 +16,48 @@ concurrency:
 env:
   PYTHONUTF8: "1"
   LC_ALL: C.UTF-8
+  CR_QUERIES: "100"      # заказчик: 40 агентов × 100 запросов = 4000
+  CR_NEW_QUERIES: "30"   # запросы по ходу у руководителя (этап 1, п.7)
+  CR_MAXTOK: "9000"
 defaults:
   run:
     working-directory: council
 
 jobs:
+  execplan:
+    name: "исполнитель ${{ matrix.shard }}: свои 100 запросов"
+    needs: plan
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: plan-*
+          merge-multiple: true
+          path: council/data
+      - name: Свои запросы исполнителя
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CR_STAGGER: "3"
+        run: |
+          mkdir -p out
+          python3 exec_plan.py --shard "${{ matrix.shard }}" --total 30 --plans data --out "out/execplan-${{ matrix.shard }}.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: execplan-${{ matrix.shard }}
+          path: council/out/
+          if-no-files-found: warn
+
   plan:
     name: "руководитель ${{ matrix.leader }}: план"
     runs-on: ubuntu-latest
@@ -50,7 +87,7 @@ jobs:
 
   exec1:
     name: "исполнитель ${{ matrix.shard }}: раунд 1"
-    needs: plan
+    needs: [plan, execplan]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -66,12 +103,18 @@ jobs:
           pattern: plan-*
           merge-multiple: true
           path: council/data
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: execplan-*
+          merge-multiple: true
+          path: council/data
       - name: Поиск (этап 1, раунд 1)
         env:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CR_STAGGER: "2"
         run: |
           mkdir -p out
           python3 executor.py --round 1 --shard "${{ matrix.shard }}" --total 30 --src data --out "out/exec1-${{ matrix.shard }}.json"
